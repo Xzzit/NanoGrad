@@ -3,7 +3,7 @@ class Tensor:
         self.data = data
         self.grad = 0
 
-        self._pre = tuple(_pre)
+        self._pre = set(_pre)
         self._backward = lambda: None
 
     def __repr__(self) -> str:
@@ -11,7 +11,14 @@ class Tensor:
 
     def __add__(self, other):
         data = self.data + other.data
-        return Tensor(data, (self, other))
+        out = Tensor(data, (self, other))
+
+        def _backward():
+            self.grad += out.grad
+            other.grad += out.grad
+        out._backward = _backward
+
+        return out
 
     def __mul__(self, other):
         data = self.data * other.data
@@ -23,3 +30,24 @@ class Tensor:
         out._backward = _backward
 
         return out
+
+    def backward(self):
+        topo = []
+        visited = set()
+
+        def build(node):
+            if node in visited:
+                return
+            else:
+                visited.add(node)
+            
+            for n in node._pre:
+                build(n)
+
+            topo.append(node)
+
+        self.grad = 1.0
+        build(self)
+
+        for node in reversed(topo):
+            node._backward()
