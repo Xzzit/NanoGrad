@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拓扑排序踩坑回放</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Serif+SC:wght@600;700&display=swap">
+<style>
+/* Layout: lesson header → four pit tabs → stage (graph + controls | code + state) → speed table (tab ② only) */
+:root{
+  --bg:#F1F4F6; --panel:#FFFFFF; --ink:#17202B; --muted:#5A6573; --line:#D2DAE2; --soft:#E6ECF1;
+  --accent:#0D7680; --accent-soft:#D3ECEE;
+  --flow:#C46A17; --flow-soft:#F7E4D0;
+  --bad:#BE3434; --bad-soft:#F6DCDC;
+  --ok:#2A7F4E; --ok-soft:#D9EFE1;
+  --warn:#8F6310; --warn-soft:#F3E7C6;
+  --f-display:"Noto Serif SC","Songti SC","SimSun",serif;
+  --f-body:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#11161C; --panel:#1A2129; --ink:#E5EAF0; --muted:#9AA5B3; --line:#2E3845; --soft:#232C36;
+    --accent:#45B9C3; --accent-soft:#183C41;
+    --flow:#EE9E4C; --flow-soft:#43301C;
+    --bad:#F07070; --bad-soft:#452022;
+    --ok:#62C48D; --ok-soft:#1C3A29;
+    --warn:#E3B24E; --warn-soft:#3D3218;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#11161C; --panel:#1A2129; --ink:#E5EAF0; --muted:#9AA5B3; --line:#2E3845; --soft:#232C36;
+  --accent:#45B9C3; --accent-soft:#183C41;
+  --flow:#EE9E4C; --flow-soft:#43301C;
+  --bad:#F07070; --bad-soft:#452022;
+  --ok:#62C48D; --ok-soft:#1C3A29;
+  --warn:#E3B24E; --warn-soft:#3D3218;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.65}
+[hidden]{display:none!important}
+.wrap{max-width:1180px;margin:0 auto;padding-block:28px 56px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:22px}
+h1,h2{font-family:var(--f-display);text-wrap:balance;margin:0;line-height:1.3}
+h1{font-size:clamp(26px,4vw,36px)}
+h2{font-size:20px}
+p{margin:0}
+code,.mono{font-family:var(--f-mono);font-size:.9em}
+.muted{color:var(--muted)}
+
+
+.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+@media (max-width:860px){.tabs{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.tab{font:inherit;color:inherit;text-align:left;cursor:pointer;background:var(--panel);border:1.5px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.tab:hover{border-color:var(--muted)}
+.tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.tab[aria-selected="true"]{border-color:var(--accent);background:var(--accent-soft)}
+.tab .t-name{font-weight:700;font-size:15px}
+.tab .t-short{font-size:13px;color:var(--muted)}
+.tab .t-tag{align-self:flex-start;font-size:11px;letter-spacing:.06em;padding:1px 8px;border-radius:99px;font-weight:600}
+.t-tag.bad{background:var(--bad-soft);color:var(--bad)}
+.t-tag.warn{background:var(--warn-soft);color:var(--warn)}
+.t-tag.ok{background:var(--ok-soft);color:var(--ok)}
+
+.stage{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width:900px){.stage{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
+.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+
+.phase{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.phase .ph-name{font-weight:700;font-size:14px;letter-spacing:.04em}
+.phase .ph-step{font-family:var(--f-mono);font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+.graph{width:100%;height:auto;display:block}
+.edge{fill:none;stroke:var(--line);stroke-width:2}
+.edge.flow{stroke:var(--flow);stroke-width:3;stroke-dasharray:8 6;animation:dash .7s linear infinite}
+@keyframes dash{to{stroke-dashoffset:28}}
+.arrow{fill:var(--line)}
+.arrow-flow{fill:var(--flow)}
+.node rect{fill:var(--panel);stroke:var(--line);stroke-width:1.5;transition:fill .2s,stroke .2s}
+.node .nm{font-family:var(--f-display);font-weight:700;font-size:19px;fill:var(--ink)}
+.node .ex{font-family:var(--f-mono);font-size:11px;fill:var(--muted)}
+.node .dt{font-family:var(--f-mono);font-size:12px;fill:var(--muted)}
+.node .gr{font-family:var(--f-mono);font-size:12.5px;font-weight:600;fill:var(--ink)}
+.node .badge{font-family:var(--f-mono);font-size:11.5px;font-weight:600;fill:var(--accent)}
+.node .badge.dup{fill:var(--bad)}
+.node.visited rect{fill:var(--accent-soft)}
+.node.stack rect{stroke:var(--accent);stroke-width:2;stroke-dasharray:5 4}
+.node.cur rect{stroke:var(--accent);stroke-width:3.5;stroke-dasharray:none}
+.back .node.cur rect{stroke:var(--flow);fill:var(--flow-soft)}
+.node.fired{opacity:.5}
+.gr.flash{animation:flash 1s ease-out}
+@keyframes flash{0%{fill:var(--flow);font-size:15px}100%{fill:var(--ink);font-size:12.5px}}
+
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--muted);margin-top:8px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:16px;height:11px;border-radius:3px;border:1.5px solid var(--line);display:inline-block}
+.sw.cur{border:3px solid var(--accent)}
+.sw.stack{border:2px dashed var(--accent)}
+.sw.vis{background:var(--accent-soft)}
+.sw.flow{border:none;height:3px;background:var(--flow)}
+
+.msg{display:flex;gap:10px;align-items:flex-start;min-height:4.8em}
+.pill{flex:none;font-size:11.5px;font-weight:700;letter-spacing:.05em;padding:2px 9px;border-radius:99px;margin-top:2px}
+.pill.info{background:var(--soft);color:var(--muted)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+.pill.bad{background:var(--bad-soft);color:var(--bad)}
+.pill.ok{background:var(--ok-soft);color:var(--ok)}
+.msg p{min-width:0}
+
+.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.btn{font:inherit;font-size:14px;cursor:pointer;color:var(--ink);background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:6px 12px}
+.btn:hover{border-color:var(--muted)}
+.btn:focus-visible,select:focus-visible,input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--panel);font-weight:600;min-width:5.5em}
+select{font:inherit;font-size:14px;color:var(--ink);background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:5px 8px}
+input[type=range]{flex:1 1 160px;accent-color:var(--accent);min-width:0}
+.kbd{font-size:12px;color:var(--muted)}
+
+.code{margin:0;font-family:var(--f-mono);font-size:13px;line-height:1.7;overflow-x:auto;background:var(--soft);border-radius:8px;padding:10px 0}
+.code .ln{display:block;padding:0 14px 0 10px;white-space:pre;border-left:3px solid transparent}
+.code .ln .no{display:inline-block;width:2.2em;color:var(--muted);opacity:.6;user-select:none}
+.code .ln.hl{border-left-color:var(--accent);background:var(--accent-soft)}
+.code .ln.hl.bad{border-left-color:var(--bad);background:var(--bad-soft)}
+.code .ln.hl.warn{border-left-color:var(--warn);background:var(--warn-soft)}
+.code .ln.hl.ok{border-left-color:var(--ok);background:var(--ok-soft)}
+
+.state{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.6fr);gap:14px}
+@media (max-width:480px){.state{grid-template-columns:minmax(0,1fr)}}
+.lbl{font-size:11.5px;font-weight:700;letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
+.stack-list{display:flex;flex-direction:column;gap:4px;font-family:var(--f-mono);font-size:13px;min-height:2em}
+.frame{padding:3px 10px;border-radius:6px;background:var(--soft);border:1px solid var(--line)}
+.frame:first-child{border-color:var(--accent);background:var(--accent-soft)}
+.chips{display:flex;flex-wrap:wrap;gap:5px;font-family:var(--f-mono);font-size:13px;min-height:1.8em;align-items:center}
+.chip{padding:2px 9px;border-radius:6px;background:var(--soft);border:1px solid var(--line);font-variant-numeric:tabular-nums}
+.chip i{font-style:normal;color:var(--muted);font-size:11px;margin-right:4px}
+.chip.dup{background:var(--bad-soft);border-color:var(--bad);color:var(--bad)}
+.chip.vis{background:var(--accent-soft);border-color:var(--accent)}
+.empty{font-size:13px;color:var(--muted)}
+.counters{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:13px}
+.counters b{font-family:var(--f-mono);font-size:18px;font-variant-numeric:tabular-nums;margin-right:4px}
+.counters .w b{color:var(--warn)}
+
+.speed table{width:100%;border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums}
+.speed th,.speed td{text-align:right;padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+.speed th:first-child,.speed td:first-child{text-align:left}
+.speed th{font-size:12px;letter-spacing:.05em;color:var(--muted);font-weight:700}
+.speed td.slow{color:var(--bad);font-family:var(--f-mono)}
+.speed td.fast{color:var(--ok);font-family:var(--f-mono)}
+.tscroll{overflow-x:auto}
+.speed .note{margin-top:10px;font-size:13px;color:var(--muted);max-width:70ch}
+
+@media (prefers-reduced-motion:reduce){
+  .edge.flow{animation:none}
+  .gr.flash{animation:none}
+  .node rect{transition:none}
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>拓扑排序踩坑回放</h1>
+  </header>
+
+  <div class="tabs" role="tablist" id="tabs"></div>
+
+  <div class="stage">
+    <div class="col">
+      <div class="card" id="graphCard">
+        <div class="phase"><span class="ph-name" id="phName"></span><span class="ph-step" id="phStep"></span></div>
+        <svg class="graph" viewBox="0 0 560 320" id="graph" role="img" aria-label="例子 4 的计算图：c = a×b，e = c×a，f = c+b，L = e×f"></svg>
+        <div class="legend">
+          <span><i class="sw cur"></i>当前节点</span>
+          <span><i class="sw stack"></i>在调用栈里</span>
+          <span><i class="sw vis"></i>已登记 visited</span>
+          <span><i class="sw flow"></i>梯度流向输入</span>
+          <span><b class="mono" style="color:var(--accent)">#2</b>&nbsp;在 topo 中的位置</span>
+        </div>
+      </div>
+      <div class="card msg" aria-live="polite"><span class="pill info" id="pill">说明</span><p id="msg"></p></div>
+      <div class="card controls">
+        <button class="btn" id="bReset" type="button">重来</button>
+        <button class="btn" id="bPrev" type="button">上一步</button>
+        <button class="btn primary" id="bPlay" type="button">播放</button>
+        <button class="btn" id="bNext" type="button">下一步</button>
+        <select id="speed" aria-label="播放速度">
+          <option value="1600">慢</option>
+          <option value="950" selected>中</option>
+          <option value="450">快</option>
+        </select>
+        <input type="range" id="scrub" min="0" max="0" value="0" aria-label="跳到某一步">
+        <span class="kbd">键盘：← → 单步，空格播放</span>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="card">
+        <div class="lbl">代码 · Tensor.backward</div>
+        <pre class="code" id="code"></pre>
+      </div>
+      <div class="card">
+        <div class="state">
+          <div>
+            <div class="lbl">调用栈（上面是当前）</div>
+            <div class="stack-list" id="stack"></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
+            <div><div class="lbl">topo（list，有顺序）</div><div class="chips" id="topo"></div></div>
+            <div><div class="lbl">visited（set）</div><div class="chips" id="visited"></div></div>
+          </div>
+        </div>
+        <div class="counters">
+          <span><b id="cCalls">0</b>次 build 调用</span>
+          <span class="w"><b id="cWasted">0</b>次重复递归</span>
+          <span><b id="cA">0</b>a.grad</span>
+          <span><b id="cB">0</b>b.grad</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <section class="card speed" id="speed-section">
+    <h2>为什么 ② 跑 25 轮会卡住</h2>
+    <p class="muted" style="margin-top:6px">你做过的实验：<code>x = x * Tensor(1) + x</code> 循环 n 轮，然后 <code>x.backward()</code>。每一轮旧的 <code>x</code> 被用两次，没有 visited 时，每多一轮，递归次数就翻一倍。</p>
+    <div class="tscroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>轮数 n</th><th>图里的节点数</th><th>①② build 调用次数</th><th>④ build 调用次数</th></tr></thead>
+        <tbody id="speedBody"></tbody>
+      </table>
+    </div>
+    <p class="note">①② 的调用次数满足 C(n) = 2·C(n−1) + 3，也就是 2<sup>n+2</sup> − 3。④ 里每个节点只展开一次，调用次数是 1 + 所有 _pre 的长度之和 = 4n + 1。② 还有一个额外开销：每次 <code>node not in topo</code> 都要把 list 从头翻一遍。</p>
+  </section>
+</div>
+
+<script>
+(function(){
+  const G = {
+    a:{data:2, pre:[], expr:'叶子'},
+    b:{data:3, pre:[], expr:'叶子'},
+    c:{data:6, pre:['a','b'], op:'*', expr:'= a × b'},
+    e:{data:12, pre:['c','a'], op:'*', expr:'= c × a'},
+    f:{data:9, pre:['c','b'], op:'+', expr:'= c + b'},
+    L:{data:108, pre:['e','f'], op:'*', expr:'= e × f'}
+  };
+  const ORDER = ['a','b','c','e','f','L'];
+  const USERS = {a:['c','e'], b:['c','f'], c:['e','f'], e:['L'], f:['L'], L:[]};
+  const POS = {a:[62,80], b:[62,240], c:[204,160], e:[352,80], f:[352,240], L:[494,160]};
+  const W = 98, H = 66;
+
+  const TAIL = [['',null],['    self.grad = 1.0','seed'],['    build(self)','start'],['',null],['    for node in reversed(topo):','loop'],['        node._backward()','fire']];
+  const V = {
+    nodedup:{name:'① 没有去重', short:'c 进了两次 topo，发了两次货', tag:['bad','算错'], body:[
+      ['    topo = []',null],['',null],['    def build(node):','enter'],['        for n in node._pre:','for'],['            build(n)','rec'],['        topo.append(node)','append']]},
+    late:{name:'② 最后才查 topo', short:'顺序对，但子图被重复递归', tag:['warn','结果对，很慢'], body:[
+      ['    topo = []',null],['',null],['    def build(node):','enter'],['        for n in node._pre:','for'],['            build(n)','rec'],['        if node not in topo:','check'],['            topo.append(node)','append']]},
+    preorder:{name:'③ 先排队再递归', short:'L 排在输入前面，顺序整个反了', tag:['bad','算错'], body:[
+      ['    topo = []',null],['',null],['    def build(node):','enter'],['        if node not in topo:','check'],['            topo.append(node)','append'],['        else:',null],['            return','ret'],['',null],['        for n in node._pre:','for'],['            build(n)','rec']]},
+    correct:{name:'④ 正确版', short:'进门登记 visited，出门才排队', tag:['ok','正确'], body:[
+      ['    topo = []',null],['    visited = set()',null],['',null],['    def build(node):','enter'],['        if node in visited:','check'],['            return','ret'],['        else:',null],['            visited.add(node)','add'],['',null],['        for n in node._pre:','for'],['            build(n)','rec'],['',null],['        topo.append(node)','append']]}
+  };
+  const KEYS = Object.keys(V);
+
+  function simulate(v){
+    const S = [];
+    const st = {stack:[], visited:[], topo:[], calls:0, wasted:0, grads:{a:0,b:0,c:0,e:0,f:0,L:0}, fired:[]};
+    const seen = new Set();
+    const lazy = v === 'nodedup' || v === 'late';
+    const snap = (tag, msg, kind, ex) => {
+      ex = ex || {};
+      S.push({tag, msg, kind: kind || 'info', phase: ex.phase || 'build',
+        stack:[...st.stack], visited:[...st.visited], topo:[...st.topo],
+        calls:st.calls, wasted:st.wasted, grads:{...st.grads}, fired:[...st.fired],
+        cur: ex.cur !== undefined ? ex.cur : (st.stack[st.stack.length-1] || null),
+        flow: ex.flow || null, flash: ex.flash || []});
+    };
+
+    st.grads.L = 1;
+    snap('seed', '先设起点 L.grad = 1.0，然后调用 build(L)，从 L 出发排出 topo。', 'info', {cur:'L'});
+
+    function build(n){
+      st.calls++;
+      const again = seen.has(n); seen.add(n);
+      if (again && lazy) st.wasted++;
+      st.stack.push(n);
+      const pre = G[n].pre;
+
+      if (v === 'preorder'){
+        if (st.topo.includes(n)){
+          snap('ret', `进入 build(${n})：${n} 已经在 topo 里，直接 return。`, 'info');
+          st.stack.pop(); return;
+        }
+        st.topo.push(n);
+        snap('append', pre.length
+          ? `进入 build(${n})：${n} 立刻进了 topo，可它的输入 ${pre.join('、')} 还没排。“每个节点排在它的输入之后”被打破了。`
+          : `进入 build(${n})：叶子 ${n} 进 topo。`, pre.length ? 'bad' : 'info');
+      } else if (v === 'correct'){
+        if (st.visited.includes(n)){
+          snap('ret', `进入 build(${n})：${n} 已在 visited 里，直接 return。${pre.length ? '它下面的子图不会再走一遍。' : ''}`, 'ok');
+          st.stack.pop(); return;
+        }
+        st.visited.push(n);
+        snap('add', `进入 build(${n})：第一次来，先登记到 visited。${pre.length ? '这时还不能进 topo，因为它的输入还没排好。' : ''}`, 'info');
+      } else {
+        snap('enter', again ? `又一次进入 build(${n})。${n} 之前已经处理过了，这一趟是重复劳动。` : `进入 build(${n})。`, again ? 'warn' : 'info');
+      }
+
+      for (const p of pre){
+        snap('rec', `处理 ${n} 的输入 ${p}：调用 build(${p})。`, 'info');
+        build(p);
+      }
+
+      if (v === 'nodedup'){
+        st.topo.push(n);
+        const k = st.topo.filter(x => x === n).length;
+        snap('append', k > 1
+          ? `${n} 第 ${k} 次进 topo，重复了。之后它的 _backward 会被调用 ${k} 次。`
+          : `${n} 的输入都排好了，${n} 进 topo。`, k > 1 ? 'bad' : 'info');
+      } else if (v === 'late'){
+        if (st.topo.includes(n)){
+          snap('check', `${n} 已经在 topo 里，不再加入。结果没错，可为了得出这个结论，刚才把 ${n}${pre.length ? ' 和它下面的子图' : ''}又走了一遍。`, 'warn');
+        } else {
+          st.topo.push(n);
+          snap('append', `${n} 的输入都排好了，${n} 进 topo。`, 'info');
+        }
+      } else if (v === 'correct'){
+        st.topo.push(n);
+        snap('append', `${n} 的输入都处理完了，现在 ${n} 才进 topo。`, 'ok');
+      }
+      st.stack.pop();
+    }
+    build('L');
+
+    const topoStr = `[${st.topo.join(', ')}]`;
+    const sum = {
+      nodedup:[`build(L) 结束。topo = ${topoStr}，有节点重复出现。倒序调用时，重复的节点会发不止一次货。`, 'bad'],
+      late:[`build(L) 结束。topo = ${topoStr}，顺序正确。但 build 被调用了 ${st.calls} 次，其中 ${st.wasted} 次是重复的。图一大，这个数会指数级增长（见下方表格）。`, 'warn'],
+      preorder:[`build(L) 结束。topo = ${topoStr}。L 排在最前面，它的输入反而在后面。倒过来遍历时，L 会最后一个发货。`, 'bad'],
+      correct:[`build(L) 结束。topo = ${topoStr}。每个节点只出现一次，并且都排在它的输入之后。`, 'ok']
+    }[v];
+    snap('start', sum[0], sum[1], {cur:null});
+
+    const rev = [...st.topo].reverse();
+    snap('loop', `开始倒序遍历 topo：${rev.join(' → ')}。每个节点调用 _backward()，把自己的 grad 推给输入。`, 'info', {phase:'back', cur:null});
+
+    for (const n of rev){
+      const node = G[n];
+      if (!node.pre.length){
+        st.fired.push(n);
+        snap('fire', `${n} 是叶子，_backward 什么都不做。`, 'info', {phase:'back', cur:n});
+        continue;
+      }
+      const twice = st.fired.includes(n);
+      const pending = USERS[n].filter(u => !st.fired.includes(u));
+      const og = st.grads[n];
+      const [s, o] = node.pre;
+      let ds, dO, fs, fo;
+      if (node.op === '*'){
+        ds = G[o].data * og; dO = G[s].data * og;
+        fs = `${G[o].data} × ${og} = ${ds}`; fo = `${G[s].data} × ${og} = ${dO}`;
+      } else {
+        ds = og; dO = og; fs = `${og}`; fo = `${og}`;
+      }
+      st.grads[s] += ds; st.grads[o] += dO;
+      st.fired.push(n);
+      let head, kind;
+      if (twice){ head = `${n} 第二次发货！同一份梯度又加了一遍。`; kind = 'bad'; }
+      else if (pending.length){ head = `${n} 还没收齐货就发了：${pending.join('、')} 还没给它送货。`; kind = 'bad'; }
+      else { head = `${n} 的货收齐了，发货。`; kind = 'ok'; }
+      snap('fire', `${head} ${n}.grad = ${og}，所以 ${s}.grad += ${fs}，${o}.grad += ${fo}。`, kind,
+        {phase:'back', cur:n, flow:{from:n, to:[s, o]}, flash:[s, o]});
+    }
+
+    const good = st.grads.a === 144 && st.grads.b === 72;
+    snap(null, good
+      ? '完成：a.grad = 144，b.grad = 72，和手算结果一致。'
+      : `完成：a.grad = ${st.grads.a}，b.grad = ${st.grads.b}。正确答案是 144 和 72，这一版算错了。`,
+      good ? 'ok' : 'bad', {phase:'done', cur:null});
+    return S;
+  }
+
+  const STEPS = {};
+  KEYS.forEach(k => STEPS[k] = simulate(k));
+
+  /* ---------- graph ---------- */
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.getElementById('graph');
+  const mk = (tag, attrs, parent) => { const el = document.createElementNS(NS, tag); for (const a in attrs) el.setAttribute(a, attrs[a]); (parent || svg).appendChild(el); return el; };
+  const defs = mk('defs', {});
+  [['arr','arrow'],['arrF','arrow-flow']].forEach(([id, cls]) => {
+    const m = mk('marker', {id, viewBox:'0 0 10 10', refX:'9', refY:'5', markerWidth:'7', markerHeight:'7', orient:'auto-start-reverse'}, defs);
+    mk('path', {d:'M0,0 L10,5 L0,10 z', class:cls}, m);
+  });
+  const edgeEls = {};
+  ORDER.forEach(n => G[n].pre.forEach(p => {
+    const [x1, y1] = [POS[p][0] + W/2, POS[p][1]];
+    const [x2, y2] = [POS[n][0] - W/2 - 2, POS[n][1]];
+    const d = y1 === y2 ? `M${x1},${y1} L${x2},${y2}` : `M${x1},${y1} C${x1+36},${y1} ${x2-36},${y2} ${x2},${y2}`;
+    edgeEls[p + '>' + n] = mk('path', {d, class:'edge', 'marker-end':'url(#arr)'});
+  }));
+  const nodeEls = {};
+  ORDER.forEach(n => {
+    const [cx, cy] = POS[n];
+    const g = mk('g', {class:'node'});
+    mk('rect', {x:cx - W/2, y:cy - H/2, width:W, height:H, rx:9}, g);
+    const nm = mk('text', {x:cx - W/2 + 10, y:cy - 9, class:'nm'}, g); nm.textContent = n;
+    const ex = mk('text', {x:cx - W/2 + 28, y:cy - 10, class:'ex'}, g); ex.textContent = G[n].expr;
+    const dt = mk('text', {x:cx - W/2 + 10, y:cy + 10, class:'dt'}, g); dt.textContent = `data ${G[n].data}`;
+    const gr = mk('text', {x:cx - W/2 + 10, y:cy + 26, class:'gr'}, g); gr.textContent = 'grad 0';
+    const bd = mk('text', {x:cx, y:cy - H/2 - 8, 'text-anchor':'middle', class:'badge'}, g);
+    nodeEls[n] = {g, gr, bd};
+  });
+
+  /* ---------- tabs ---------- */
+  const tabsEl = document.getElementById('tabs');
+  KEYS.forEach(k => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'tab'; b.id = 'tab-' + k;
+    b.setAttribute('role', 'tab'); b.dataset.k = k;
+    b.innerHTML = `<span class="t-tag ${V[k].tag[0]}">${V[k].tag[1]}</span><span class="t-name">${V[k].name}</span><span class="t-short">${V[k].short}</span>`;
+    b.addEventListener('click', () => choose(k, true));
+    tabsEl.appendChild(b);
+  });
+
+  /* ---------- state ---------- */
+  let cur = 'nodedup', idx = 0, timer = null, lines = [];
+  const $ = id => document.getElementById(id);
+
+  function buildCode(k){
+    lines = [['def backward(self):', null], ...V[k].body, ...TAIL];
+    $('code').innerHTML = lines.map((l, i) =>
+      `<span class="ln" data-i="${i}"><span class="no">${i + 1}</span>${l[0].replace(/&/g,'&amp;').replace(/</g,'&lt;') || ' '}</span>`).join('');
+  }
+
+  function render(){
+    const S = STEPS[cur], s = S[idx];
+    const card = $('graphCard');
+    card.classList.toggle('back', s.phase === 'back');
+    $('phName').textContent = s.phase === 'build' ? '阶段一：build 排出 topo' : s.phase === 'back' ? '阶段二：倒序调用 _backward' : '结果';
+    $('phStep').textContent = `第 ${idx + 1} / ${S.length} 步`;
+
+    ORDER.forEach(n => {
+      const {g, gr, bd} = nodeEls[n];
+      g.classList.toggle('cur', s.cur === n);
+      g.classList.toggle('stack', s.stack.includes(n) && s.cur !== n);
+      g.classList.toggle('visited', s.visited.includes(n));
+      g.classList.toggle('fired', s.phase !== 'build' && s.fired.includes(n) && s.cur !== n);
+      gr.textContent = `grad ${s.grads[n]}`;
+      gr.classList.remove('flash');
+      if (s.flash.includes(n)){ gr.getBoundingClientRect(); gr.classList.add('flash'); }
+      const pos = []; s.topo.forEach((x, i) => { if (x === n) pos.push('#' + (i + 1)); });
+      bd.textContent = pos.join(' ');
+      bd.classList.toggle('dup', pos.length > 1);
+    });
+    for (const key in edgeEls){
+      const [p, n] = key.split('>');
+      const on = !!(s.flow && s.flow.from === n && s.flow.to.includes(p));
+      edgeEls[key].classList.toggle('flow', on);
+      edgeEls[key].setAttribute('marker-end', on ? 'url(#arrF)' : 'url(#arr)');
+    }
+
+    const pill = $('pill');
+    pill.className = 'pill ' + s.kind;
+    pill.textContent = {info:'说明', warn:'注意', bad:'出错', ok:'正确'}[s.kind];
+    $('msg').textContent = s.msg;
+
+    document.querySelectorAll('#code .ln').forEach(el => el.className = 'ln');
+    if (s.tag){
+      const i = lines.findIndex(l => l[1] === s.tag);
+      if (i >= 0){ const el = document.querySelector(`#code .ln[data-i="${i}"]`); el.className = 'ln hl ' + (s.kind === 'info' ? '' : s.kind); }
+    }
+
+    $('stack').innerHTML = s.stack.length
+      ? [...s.stack].reverse().map(x => `<span class="frame">build(${x})</span>`).join('')
+      : `<span class="empty">${s.phase === 'build' ? '空' : '递归已结束'}</span>`;
+
+    const counts = {};
+    s.topo.forEach(x => counts[x] = (counts[x] || 0) + 1);
+    $('topo').innerHTML = s.topo.length
+      ? s.topo.map((x, i) => `<span class="chip${counts[x] > 1 ? ' dup' : ''}"><i>${i + 1}</i>${x}</span>`).join('')
+      : '<span class="empty">空</span>';
+    $('visited').innerHTML = cur !== 'correct'
+      ? '<span class="empty">这一版没有 visited</span>'
+      : (s.visited.length ? s.visited.map(x => `<span class="chip vis">${x}</span>`).join('') : '<span class="empty">空</span>');
+
+    $('cCalls').textContent = s.calls;
+    $('cWasted').textContent = s.wasted;
+    $('cA').textContent = s.grads.a;
+    $('cB').textContent = s.grads.b;
+
+    $('scrub').max = S.length - 1;
+    $('scrub').value = idx;
+    $('bPrev').disabled = idx === 0;
+    $('bNext').disabled = idx === S.length - 1;
+  }
+
+  function choose(k, fromClick){
+    stop();
+    cur = k; idx = 0;
+    document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-selected', String(t.dataset.k === k)));
+    $('speed-section').hidden = k !== 'late';
+    buildCode(k);
+    render();
+    if (fromClick){ try { history.replaceState(null, '', '#' + k); } catch (e) {} }
+  }
+  function step(d){ const n = idx + d; if (n < 0 || n >= STEPS[cur].length) return false; idx = n; render(); return true; }
+  function stop(){ if (timer){ clearInterval(timer); timer = null; } $('bPlay').textContent = '播放'; }
+  function play(){
+    if (timer){ stop(); return; }
+    if (idx === STEPS[cur].length - 1) { idx = 0; render(); }
+    $('bPlay').textContent = '暂停';
+    timer = setInterval(() => { if (!step(1)) stop(); }, +$('speed').value);
+  }
+
+  $('bPlay').addEventListener('click', play);
+  $('bNext').addEventListener('click', () => { stop(); step(1); });
+  $('bPrev').addEventListener('click', () => { stop(); step(-1); });
+  $('bReset').addEventListener('click', () => { stop(); idx = 0; render(); });
+  $('speed').addEventListener('change', () => { if (timer){ stop(); play(); } });
+  $('scrub').addEventListener('input', e => { stop(); idx = +e.target.value; render(); });
+  document.addEventListener('keydown', e => {
+    const t = e.target;
+    if (t && (t.tagName === 'SELECT' || t.tagName === 'INPUT')) return;
+    if (e.key === 'ArrowRight'){ stop(); step(1); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft'){ stop(); step(-1); e.preventDefault(); }
+    else if (e.key === ' ' && !(t && t.tagName === 'BUTTON')){ play(); e.preventDefault(); }
+  });
+
+  /* ---------- speed table ---------- */
+  const fmt = x => x.toLocaleString('zh-CN');
+  $('speedBody').innerHTML = [1, 5, 10, 15, 20, 25].map(n =>
+    `<tr><td>${n}</td><td>${fmt(3*n + 1)}</td><td class="slow">${fmt(2 ** (n + 2) - 3)}</td><td class="fast">${fmt(4*n + 1)}</td></tr>`).join('');
+
+  const start = (location.hash || '').slice(1);
+  choose(KEYS.includes(start) ? start : 'nodedup', false);
+})();
+</script>
+
+</html>
